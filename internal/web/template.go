@@ -25,7 +25,7 @@ const PageHTML = `<!doctype html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f81f7'/%3E%3Cpath d='M9 11h14M9 16h14M9 21h9' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
 <link id="hljs-theme" rel="stylesheet" href="/vendor/hljs-dark.css">
 <link rel="stylesheet" href="/vendor/katex.min.css">
-<script>window.MDSERVE={reload:__RELOAD__,defaultDoc:"__DEFAULT__"};</script>
+<script>window.MDSERVE={reload:__RELOAD__,defaultDoc:__DEFAULT__};</script>
 <style>
 :root{
   --speed:.18s;
@@ -349,6 +349,8 @@ mark.find.cur{background:#ff9f43;color:#000;box-shadow:0 0 0 2px #e07b1e}
   <div id="toc"></div>
 </aside>
 
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/reader-security.js"></script>
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/highlight.min.js"></script>
 <script src="/vendor/mermaid.min.js"></script>
@@ -502,7 +504,7 @@ async function openFile(relpath, keepScroll){
   state.path = relpath;
   $("#empty")?.remove();
   page.style.display = "";
-  page.innerHTML = marked.parse(md);
+  page.replaceChildren(mdserveSecurity.sanitizeHTML(marked.parse(md)));
   enhance(relpath);
   buildOutline();
   highlightActive();
@@ -523,7 +525,7 @@ async function openFile(relpath, keepScroll){
 function crumb(relpath){
   const parts = relpath.split("/");
   const file = parts.pop().replace(/\.md$/i,"");
-  $("#crumb").innerHTML = (parts.length? parts.join(" / ")+" / ":"") + "<b>"+esc(file)+"</b>";
+  $("#crumb").innerHTML = (parts.length? parts.map(esc).join(" / ")+" / ":"") + "<b>"+esc(file)+"</b>";
 }
 const esc = s => s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
@@ -543,14 +545,7 @@ function enhance(relpath){
     }
   });
   const nodes = page.querySelectorAll(".mermaid");
-  if(nodes.length){
-    try{
-      mermaid.initialize({startOnLoad:false, securityLevel:"loose",
-        theme:mermaidTheme(state.theme),
-        fontFamily:'-apple-system,Segoe UI,Roboto,sans-serif'});
-      mermaid.run({nodes});
-    }catch(e){ console.warn("mermaid", e); }
-  }
+  if(nodes.length) mdserveSecurity.renderDiagrams(nodes, mermaidTheme(state.theme));
   try{
     // KaTeX's $...$ inline delimiter would otherwise pair across currency
     // amounts (e.g. "$100 ... $5,000"), rendering prices as math. Neutralize
@@ -565,7 +560,7 @@ function enhance(relpath){
         {left:"\\(",right:"\\)",display:false}
       ],
       ignoredTags:["script","noscript","style","textarea","pre","code"],
-      throwOnError:false
+      throwOnError:false, trust:false
     });
     mathWalk(page, s => s.split(PH).join("$"));
   }catch(e){}
@@ -997,7 +992,7 @@ async function poll(){
 </html>`
 
 // buildShell is the standalone page emitted by ` + "`mdserve build`" + ` for each doc:
-// server-rendered Markdown wrapped in the same theme, with the embedded vendor
+// inert server-rendered Markdown sanitized in the browser, with the embedded vendor
 // bundle copied alongside so the static site is fully offline too. Sentinels
 // __ROOT__ (relative path to the output root), __TITLE__ and __BODY__ are
 // substituted per file.
@@ -1039,19 +1034,31 @@ body{margin:0;background:#edece6;color:var(--ink);
 </style>
 </head>
 <body data-theme="warm">
-<main id="page">__BODY__</main>
+<main id="page"></main>
+<script id="document-source" type="application/json">__BODY__</script>
+<script src="__ROOT__vendor/purify.min.js"></script>
+<script src="__ROOT__vendor/reader-security.js"></script>
 <script src="__ROOT__vendor/highlight.min.js"></script>
 <script src="__ROOT__vendor/mermaid.min.js"></script>
 <script src="__ROOT__vendor/katex.min.js"></script>
 <script src="__ROOT__vendor/auto-render.min.js"></script>
 <script>
+const page = document.getElementById("page");
+page.replaceChildren(mdserveSecurity.sanitizeHTML(JSON.parse(document.getElementById("document-source").textContent)));
+page.querySelectorAll("a[href]").forEach(function(a){
+  const href = a.getAttribute("href");
+  if(!/^([a-z][a-z0-9+.-]*:|\/\/)/i.test(href)){
+    a.removeAttribute("target");
+    a.setAttribute("href", href.replace(/\.md(?=($|[?#]))/i, ".md.html"));
+  } else { a.rel="noopener noreferrer"; }
+});
 document.querySelectorAll("pre>code").forEach(function(c){
   if([...c.classList].some(x=>x==="language-mermaid")){
     var d=document.createElement("div"); d.className="mermaid"; d.textContent=c.textContent;
     c.closest("pre").replaceWith(d);
   } else { try{ hljs.highlightElement(c); }catch(e){} }
 });
-try{ mermaid.initialize({startOnLoad:true,securityLevel:"loose",theme:"neutral"}); }catch(e){}
+mdserveSecurity.renderDiagrams(document.querySelectorAll(".mermaid"), "neutral");
 try{ (function(){
   var page=document.getElementById("page"), PH="\u0000";
   // shield currency ($100) from KaTeX's $...$ delimiter, then restore it
@@ -1066,9 +1073,10 @@ try{ (function(){
   renderMathInElement(page,{delimiters:[
     {left:"$$",right:"$$",display:true},{left:"\\[",right:"\\]",display:true},
     {left:"$",right:"$",display:false},{left:"\\(",right:"\\)",display:false}],
-    ignoredTags:["script","noscript","style","textarea","pre","code"],throwOnError:false});
+    ignoredTags:["script","noscript","style","textarea","pre","code"],throwOnError:false, trust:false});
   walk(function(s){return s.split(PH).join("$");});
 })(); }catch(e){}
+document.querySelectorAll("#page h1,#page h2,#page h3,#page h4,#page h5,#page h6").forEach(function(h){if(h.id.startsWith("user-content-")) h.id=h.id.slice(13);});
 // dir="auto" per block so Arabic/Persian read right-to-left (code stays LTR via CSS)
 document.querySelectorAll("#page p,#page li,#page h1,#page h2,#page h3,#page h4,#page h5,#page h6,#page blockquote,#page td,#page th,#page dt,#page dd,#page figcaption,#page summary").forEach(function(el){el.setAttribute("dir","auto");});
 </script>

@@ -246,7 +246,7 @@ func TestBuildStaticOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(root), "<h1") || !strings.Contains(string(root), "Home") {
+	if !strings.Contains(staticBody(t, root), "<h1") || !strings.Contains(string(root), "Home") {
 		t.Errorf("README.md.html missing rendered heading")
 	}
 	if !strings.Contains(string(root), `href="vendor/hljs-theme.css"`) {
@@ -256,10 +256,29 @@ func TestBuildStaticOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(nested), "<table>") {
+	if !strings.Contains(staticBody(t, nested), "<table>") {
 		t.Errorf("intro.md.html missing rendered table")
 	}
 	if !strings.Contains(string(nested), `href="../vendor/hljs-theme.css"`) {
 		t.Errorf("nested page should reference vendor at depth 1 (../)")
 	}
+}
+
+// Static document HTML is JSON data, not active markup in the initial parse.
+func staticBody(t *testing.T, page []byte) string {
+	t.Helper()
+	const marker = `<script id="document-source" type="application/json">`
+	_, rest, found := strings.Cut(string(page), marker)
+	if !found {
+		t.Fatal("missing inert static source")
+	}
+	data, _, found := strings.Cut(rest, "</script>")
+	if !found {
+		t.Fatal("missing static source end")
+	}
+	var body string
+	if err := json.Unmarshal([]byte(data), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body
 }

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
@@ -44,7 +45,8 @@ type Server struct {
 	docDir  string
 	opts    Options
 	exclude []string // validated, lowercased copy of opts.Exclude (empty dropped)
-	page    string   // pageHTML with the per-server sentinels substituted
+	policy  string
+	page    string // pageHTML with the per-server sentinels substituted
 }
 
 // NewServer constructs a Server rooted at opts.Dir.
@@ -81,14 +83,14 @@ func NewServer(opts Options) (*Server, error) {
 	}
 	page := strings.NewReplacer(
 		"__RELOAD__", reload,
-		"__DEFAULT__", opts.DefaultDoc,
-		"__VERSION__", opts.Version,
+		"__DEFAULT__", jsonString(opts.DefaultDoc),
+		"__VERSION__", html.EscapeString(opts.Version),
 	).Replace(web.PageHTML)
 	root, err := os.OpenRoot(abs)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{root: root, docDir: abs, opts: opts, exclude: exclude, page: page}, nil
+	return &Server{root: root, docDir: abs, opts: opts, exclude: exclude, page: page, policy: web.ContentPolicy(page) + "; frame-ancestors 'none'"}, nil
 }
 
 // isExcluded reports whether a slash-separated path under docDir matches any
@@ -129,6 +131,14 @@ func (s *Server) isExcluded(rel string) bool {
 //	GET /vendor/<name>    → embedded vendor asset
 //	anything else         → 404
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", s.policy)
+	if r.URL.Path == "/file" || r.URL.Path == "/raw" {
+		// Standalone HTML/SVG assets must not become executable same-origin pages.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox; frame-ancestors 'none'")
+	}
 	switch p := r.URL.Path; {
 	case p == "/" || p == "/index.html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -281,7 +291,11 @@ func extractTitle(src []byte) string {
 	return ""
 }
 
-var htmlEsc = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+// jsonString uses encoding/json HTML escaping so even script terminators remain data.
+func jsonString(value string) string {
+	b, _ := json.Marshal(value)
+	return string(b)
+}
 
 // BuildStatic renders each .md under docDir to a standalone HTML page under
 // outDir, and copies the embedded vendor bundle alongside, so the result is a
@@ -313,9 +327,9 @@ func (s *Server) BuildStatic(outDir string) error {
 		}
 		depth := strings.Count(rel, "/")
 		root := strings.Repeat("../", depth)
-		body := string(markdown.Render(raw))
-		shell := strings.NewReplacer("__ROOT__", root, "__TITLE__", htmlEsc.Replace(title)).Replace(web.BuildShell)
-		shell = strings.Replace(shell, "__BODY__", body, 1)
+		body := jsonString(string(markdown.Render(raw)))
+		shell := strings.NewReplacer("__ROOT__", root, "__TITLE__", html.EscapeString(title), "__BODY__", body).Replace(web.BuildShell)
+		shell = web.ProtectStatic(shell)
 		outPath := filepath.Join(outDir, filepath.FromSlash(rel)+".html")
 		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 			return err

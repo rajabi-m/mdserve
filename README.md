@@ -187,12 +187,31 @@ headers are accepted for navigation and command-line clients. Cross-site and
 same-site Fetch Metadata requests are rejected. Only GET and HEAD are supported;
 no CORS access is granted. Reverse proxies must preserve these host/origin rules.
 
+Rendered Markdown is sanitized with the locally bundled DOMPurify before DOM
+insertion in both live and static modes. Supported formatting remains; scripts,
+event handlers, raw SVG/MathML, embedded frames/objects, forms, and document
+styles are removed. Task checkboxes are disabled. Mermaid uses strict security,
+text labels, sanitized SVG output, and no document-controlled callbacks.
+Static pages require JavaScript to sanitize their inert rendered source before
+displaying it; they work offline with the copied vendor bundle.
+
+The reader uses a hash-based script Content Security Policy without inline-script
+or eval permission; inline styles remain permitted for math and diagrams. Live
+raw/asset responses have a restrictive sandbox policy to prevent standalone
+HTML/SVG from becoming executable reader-origin pages. This does not sanitize
+every copied export asset; export selection and destination safety are separate.
+
+Embedded libraries and fonts need no network. Documents may still reference
+remote HTTP/HTTPS images and links; remote images remain allowed by design and
+can contact their hosts. Choose trusted documents when external resource privacy
+matters.
+
 ## Design
 
 One static Go binary, **zero third-party dependencies** — pure standard library.
 Markdown is rendered client-side by marked.js; the file tree (`/api/tree`), file
 contents (`/raw`), and change polling (`/api/poll`) are tiny JSON/text endpoints.
-The front-end vendor bundle — marked, highlight.js, Mermaid, KaTeX (+ its fonts)
+The front-end vendor bundle — marked, DOMPurify, highlight.js, Mermaid, KaTeX (+ its fonts)
 — is embedded with `go:embed` and served from `/vendor/`, so both the live
 reader and the static build work with no network. Live-reload is an mtime poll,
 so behavior is identical across OSes. The static build pre-renders Markdown with

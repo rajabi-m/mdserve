@@ -14,3 +14,12 @@ browser profiles, and local listeners. IPv6 loopback must be available.
 `hosts.cjs` checks actual browser rendering, IPv4/IPv6/wildcard binding,
 busy-port fallback, same-origin fetch, and unauthorized Host/Origin/methods.
 These exercise DNS-rebinding prerequisites; they do not simulate a complete attack.
+
+`security.cjs` checks live/static HTML and SVG payloads, event handlers, unsafe
+links, iframe/object/style/form content, filename injection, attempted dummy
+neighbor-document exfiltration to a controlled local endpoint, strict Mermaid,
+and CSP enforcement. It removes CSP in a separate test to prove sanitization
+independently. Compatibility covers headings, links, local images, tables,
+checkboxes, highlighting, diagrams, math, themes, RTL paragraphs and LTR islands;
+static pages are also loaded via file://. Set MDSERVE_KEEP_ARTIFACTS=1 to retain
+dummy-only fixtures and screenshots at the printed temporary path.

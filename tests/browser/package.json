@@ -1,1 +1,1 @@
-{"private":true,"scripts":{"test":"node hosts.cjs"},"devDependencies":{"playwright":"1.64.0"}}
+{"private":true,"scripts":{"test":"node hosts.cjs && node security.cjs"},"devDependencies":{"playwright":"1.64.0"}}
