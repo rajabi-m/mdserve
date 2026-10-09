@@ -20,6 +20,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	return srv, dir
 }
 
@@ -82,6 +83,8 @@ func TestReloadAndDefaultSentinels(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "README.md"), "# H\n")
 	on, _ := NewServer(Options{Dir: dir, DefaultDoc: "guide/x.md", Reload: true})
 	off, _ := NewServer(Options{Dir: dir, Reload: false})
+	defer on.Close()
+	defer off.Close()
 	if !strings.Contains(on.page, "reload:true") {
 		t.Error("reload:true not injected when Reload is on")
 	}
@@ -172,6 +175,7 @@ func TestFileServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	cases := []struct {
 		path, wantCT string
 	}{

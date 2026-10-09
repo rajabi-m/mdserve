@@ -162,8 +162,19 @@ mdserve serve --exclude node_modules --exclude "*.private.md"  # hide paths
 | `--out` | — | output dir (build, required) |
 
 `--exclude` hides matching paths from the nav, direct URLs, and the static
-build. It matches by path name (case-insensitively), not by symlink target, so
-it's a convenience filter — not a security boundary.
+build, including descendants of excluded directories. Matching is
+case-insensitive. Hidden path segments (such as `.env` and `.git`) and `_site`
+are blocked by default across requests, indexing, polling, and export inputs.
+Symlinks beneath the document root are rejected, including links to files inside
+that root. The explicitly configured root may itself be a symlink: its directory
+is opened once and remains anchored even if that symlink is changed later.
+
+File URLs must use slash-separated relative paths without `.` or `..` segments.
+Backslashes, colons (including Windows drive names and alternate data streams),
+and segments ending in dots or spaces are rejected on every platform. Ordinary
+Markdown, images, and local assets remain supported. This policy does not isolate
+hard-linked files or mounted filesystems; choose a document root containing only
+files you intend to share.
 
 ## Design
 

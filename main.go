@@ -178,6 +178,7 @@ func runServe(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	defer srv.Close()
 	ln, shown, err := listen(*addr)
 	if err != nil {
 		fatal(err)
@@ -221,6 +222,7 @@ func runBuild(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	defer srv.Close()
 	if err := srv.BuildStatic(*out); err != nil {
 		fatal(err)
 	}

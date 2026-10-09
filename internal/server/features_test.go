@@ -62,6 +62,7 @@ func excludeTree(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	return srv, dir
 }
 

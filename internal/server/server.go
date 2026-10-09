@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -41,6 +40,7 @@ type Options struct {
 // /api/tree; change detection from /api/poll; vendor assets from /vendor/. No
 // file is cached server-side — each request re-reads from disk.
 type Server struct {
+	root    *os.Root
 	docDir  string
 	opts    Options
 	exclude []string // validated, lowercased copy of opts.Exclude (empty dropped)
@@ -84,7 +84,11 @@ func NewServer(opts Options) (*Server, error) {
 		"__DEFAULT__", opts.DefaultDoc,
 		"__VERSION__", opts.Version,
 	).Replace(web.PageHTML)
-	return &Server{docDir: abs, opts: opts, exclude: exclude, page: page}, nil
+	root, err := os.OpenRoot(abs)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{root: root, docDir: abs, opts: opts, exclude: exclude, page: page}, nil
 }
 
 // isExcluded reports whether a slash-separated path under docDir matches any
@@ -137,7 +141,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"root":     filepath.Base(s.docDir),
 			"rootPath": s.docDir,
-			"tree":     s.buildAPITree(s.docDir, ""),
+			"tree":     s.buildAPITree(),
 		})
 	case p == "/api/poll":
 		writeJSON(w, s.flattenMtimes())
@@ -161,14 +165,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 // serveRaw returns the raw Markdown for ?path=<rel>, resolved safely inside
 // docDir.
 func (s *Server) serveRaw(w http.ResponseWriter, r *http.Request) {
-	full, ok := s.resolveMd(r.URL.Query().Get("path"))
-	if !ok {
+	rel := r.URL.Query().Get("path")
+	if !strings.HasSuffix(strings.ToLower(rel), ".md") {
 		http.NotFound(w, r)
 		return
 	}
-	b, err := os.ReadFile(full)
+	b, err := s.readPath(rel)
 	if err != nil {
-		http.Error(w, "read: "+err.Error(), http.StatusInternalServerError)
+		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -178,42 +182,20 @@ func (s *Server) serveRaw(w http.ResponseWriter, r *http.Request) {
 
 // serveFile serves any file referenced by a doc (images, etc.) from ?path=<rel>,
 // resolved safely inside docDir — so ![](diagram.png), <img src="x.svg"> and
-// links to local assets work. http.ServeFile handles content types and ranges.
+// links to local assets work. http.ServeContent handles content types and ranges on the opened handle.
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
-	full, ok := s.resolvePath(r.URL.Query().Get("path"))
-	if !ok {
+	f, err := s.openPath(r.URL.Query().Get("path"))
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, full)
-}
-
-// resolvePath maps a slash rel path to an absolute file (any type) inside docDir,
-// or returns ok=false. path.Clean on a rooted copy neutralizes "../" traversal,
-// and a prefix check guards against any residual escape.
-func (s *Server) resolvePath(rel string) (string, bool) {
-	clean := filepath.FromSlash(path.Clean("/" + rel))
-	full := filepath.Join(s.docDir, clean)
-	sep := string(filepath.Separator)
-	if full != s.docDir && !strings.HasPrefix(full+sep, s.docDir+sep) {
-		return "", false
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
 	}
-	if s.isExcluded(path.Clean("/" + rel)[1:]) {
-		return "", false
-	}
-	if info, err := os.Stat(full); err != nil || info.IsDir() {
-		return "", false
-	}
-	return full, true
-}
-
-// resolveMd is resolvePath restricted to .md files.
-func (s *Server) resolveMd(rel string) (string, bool) {
-	full, ok := s.resolvePath(rel)
-	if !ok || !strings.HasSuffix(strings.ToLower(full), ".md") {
-		return "", false
-	}
-	return full, true
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 // apiNode is one entry in the /api/tree JSON: a directory (with Children) or a
@@ -226,54 +208,48 @@ type apiNode struct {
 	Children []apiNode `json:"children,omitempty"`
 }
 
-// buildAPITree builds a recursive .md tree under absDir: directories first
+// buildAPITree builds a recursive .md tree under the anchored root: directories first
 // (pruned when they contain no markdown), then files, each group sorted
 // case-insensitively. Hidden dirs and the build output (_site) are skipped.
-func (s *Server) buildAPITree(absDir, rel string) []apiNode {
-	entries, err := os.ReadDir(absDir)
-	if err != nil {
-		return []apiNode{}
-	}
-	var dirs, files []os.DirEntry
-	for _, e := range entries {
-		if e.IsDir() {
-			if !strings.HasPrefix(e.Name(), ".") && e.Name() != "_site" {
-				dirs = append(dirs, e)
+func (s *Server) buildAPITree() []apiNode {
+	tree := []apiNode{}
+	_ = s.walkFiles(".", func(rel string, info os.FileInfo) error {
+		if !strings.HasSuffix(strings.ToLower(rel), ".md") {
+			return nil
+		}
+		nodes := &tree
+		parts := strings.Split(rel, "/")
+		for i, part := range parts[:len(parts)-1] {
+			idx := -1
+			for j := range *nodes {
+				if (*nodes)[j].Type == "dir" && (*nodes)[j].Name == part {
+					idx = j
+					break
+				}
 			}
-		} else if strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
-			files = append(files, e)
+			if idx < 0 {
+				*nodes = append(*nodes, apiNode{Type: "dir", Name: part, Relpath: strings.Join(parts[:i+1], "/"), Children: []apiNode{}})
+				idx = len(*nodes) - 1
+			}
+			nodes = &(*nodes)[idx].Children
 		}
-	}
-	byNameFold := func(s []os.DirEntry) {
-		sort.Slice(s, func(i, j int) bool {
-			return strings.ToLower(s[i].Name()) < strings.ToLower(s[j].Name())
+		*nodes = append(*nodes, apiNode{Type: "file", Name: info.Name(), Relpath: rel, Mtime: float64(info.ModTime().UnixNano()) / 1e9})
+		return nil
+	})
+	var order func([]apiNode)
+	order = func(nodes []apiNode) {
+		sort.Slice(nodes, func(i, j int) bool {
+			if nodes[i].Type != nodes[j].Type {
+				return nodes[i].Type == "dir"
+			}
+			return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
 		})
-	}
-	byNameFold(dirs)
-	byNameFold(files)
-
-	out := []apiNode{}
-	for _, d := range dirs {
-		childRel := relJoin(rel, d.Name())
-		if s.isExcluded(childRel) {
-			continue
-		}
-		if ch := s.buildAPITree(filepath.Join(absDir, d.Name()), childRel); len(ch) > 0 {
-			out = append(out, apiNode{Type: "dir", Name: d.Name(), Relpath: childRel, Children: ch})
+		for i := range nodes {
+			order(nodes[i].Children)
 		}
 	}
-	for _, f := range files {
-		fileRel := relJoin(rel, f.Name())
-		if s.isExcluded(fileRel) {
-			continue
-		}
-		var mt float64
-		if info, err := f.Info(); err == nil {
-			mt = float64(info.ModTime().UnixNano()) / 1e9
-		}
-		out = append(out, apiNode{Type: "file", Name: f.Name(), Relpath: fileRel, Mtime: mt})
-	}
-	return out
+	order(tree)
+	return tree
 }
 
 // Dir returns the absolute root directory the server is serving.
@@ -291,13 +267,6 @@ func (s *Server) Stats() (files, dirs int) {
 		}
 	}
 	return files, len(seen)
-}
-
-func relJoin(rel, name string) string {
-	if rel == "" {
-		return name
-	}
-	return rel + "/" + name
 }
 
 // extractTitle returns the first H1, or "" if the file doesn't lead with one.
@@ -334,7 +303,7 @@ func (s *Server) BuildStatic(outDir string) error {
 	}
 	sort.Strings(rels)
 	for _, rel := range rels {
-		raw, err := os.ReadFile(filepath.Join(s.docDir, filepath.FromSlash(rel)))
+		raw, err := s.readPath(rel)
 		if err != nil {
 			return err
 		}
@@ -362,55 +331,30 @@ func (s *Server) BuildStatic(outDir string) error {
 // relative paths), so images and other assets referenced by the docs resolve in
 // the static site. Hidden dirs and the build output (_site) are skipped.
 func (s *Server) copyAssets(outDir string) error {
-	return filepath.WalkDir(s.docDir, func(p string, d fs.DirEntry, err error) error {
+	return s.walkFiles(".", func(rel string, info os.FileInfo) error {
+		if strings.HasSuffix(strings.ToLower(rel), ".md") {
+			return nil
+		}
+		in, err := s.openPath(rel)
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(s.docDir, p)
+		defer in.Close()
+		dst := filepath.Join(outDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+		out, err := os.Create(dst)
 		if err != nil {
 			return err
 		}
-		slashRel := filepath.ToSlash(rel)
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") || d.Name() == "_site" {
-				return fs.SkipDir
-			}
-			if slashRel != "." && s.isExcluded(slashRel) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
-			return nil
-		}
-		if s.isExcluded(slashRel) {
-			return nil
-		}
-		dst := filepath.Join(outDir, rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		_, err = io.Copy(out, in)
+		cerr := out.Close()
+		if err != nil {
 			return err
 		}
-		return copyFile(p, dst)
+		return cerr
 	})
-}
-
-func copyFile(src, dst string) (err error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := out.Close(); err == nil {
-			err = cerr
-		}
-	}()
-	_, err = io.Copy(out, in)
-	return err
 }
 
 // statusWriter records the response status code for request logging.
