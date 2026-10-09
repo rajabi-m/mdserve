@@ -13,7 +13,7 @@ const path = require('node:path');
  const busy=net.createServer();
  try {
  fs.writeFileSync(path.join(tmp,'README.md'),'# Browser host gate\n\nordinary content');
- execFileSync('go',['build','-o',binary,'.'],{cwd:path.resolve(__dirname,'../..'),env:{...process.env,GOCACHE:'/private/tmp/mdserve-go-cache'}});
+ execFileSync('go',['build','-o',binary,'.'],{cwd:path.resolve(__dirname,'../..'),env:{...process.env,GOCACHE:process.env.GOCACHE||path.join(os.tmpdir(),'mdserve-go-cache')}});
  await new Promise(resolve=>busy.listen(0,'127.0.0.1',resolve));
  browser=await chromium.launch(process.env.MDSERVE_CHROME ? {executablePath:process.env.MDSERVE_CHROME}:{});
  for (const addr of ['127.0.0.1:0',`127.0.0.1:${busy.address().port}`,'[::1]:0',':0']) {

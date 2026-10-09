@@ -4,7 +4,7 @@ Development only; the Go binary has no Node or network dependency.
 
 ```
 npm ci --prefix tests/browser
-npx --prefix tests/browser playwright install chromium
+cd tests/browser && npx playwright install chromium && cd ../..
 npm test --prefix tests/browser
 ```
 
@@ -23,3 +23,13 @@ independently. Compatibility covers headings, links, local images, tables,
 checkboxes, highlighting, diagrams, math, themes, RTL paragraphs and LTR islands;
 static pages are also loaded via file://. Set MDSERVE_KEEP_ARTIFACTS=1 to retain
 dummy-only fixtures and screenshots at the printed temporary path.
+
+`vendor.cjs` runs isolated browser processes with a 15-second parent deadline.
+It checks that all-days Gantt exclusions terminate and KaTeX ignores inherited
+`trust` options. Deadline failures kill the disposable browser process group on
+POSIX (or its process tree on Windows). These reproduce vendor advisories without
+using private data or external endpoints.
+
+CI installs locked development dependencies and Playwright Chromium on Linux;
+Go regressions run separately on Linux, macOS and Windows. Hosted workflow results
+are distinct from local tests and must be checked before merging.

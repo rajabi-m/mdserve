@@ -1,0 +1,62 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false # standard-library-only module has no go.sum
+      - name: Install optional profile-test shells
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fish zsh
+      - name: Go regressions (includes installer fixtures on POSIX)
+        run: go test ./...
+      - name: Race checks
+        run: go test -race ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Renderer fuzz smoke
+        if: runner.os == 'Linux'
+        run: go test ./internal/markdown -run '^$' -fuzz '^FuzzRender$' -fuzztime 10s -parallel 2
+
+  browser:
+    name: Chromium live and static regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Install locked development dependencies
+        run: npm ci --prefix tests/browser
+      - name: Install Chromium and system dependencies
+        working-directory: tests/browser
+        run: npx playwright install --with-deps chromium
+      - name: Browser regressions
+        run: npm test --prefix tests/browser

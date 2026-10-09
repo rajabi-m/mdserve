@@ -22,7 +22,7 @@ const {pathToFileURL}=require('node:url');
  const filename='<img src=x onerror="window.__executed=true">';fs.mkdirSync(path.join(docs,filename));fs.writeFileSync(path.join(docs,filename,'safe.md'),'# Filename fixture');
  fs.cpSync(path.join(__dirname,'fixtures'),docs,{recursive:true});
  fs.appendFileSync(path.join(docs,'README.md'),'\nاستانداردسازی زیرساخت‌های بین‌المللی — می‌شود <bdi dir="ltr">+98 21 9123 4567</bdi>\n');
- execFileSync('go',['build','-o',binary,'.'],{cwd:repo,env:{...process.env,GOCACHE:'/private/tmp/mdserve-go-cache'}});
+ execFileSync('go',['build','-o',binary,'.'],{cwd:repo,env:{...process.env,GOCACHE:process.env.GOCACHE||path.join(os.tmpdir(),'mdserve-go-cache')}});
  execFileSync(binary,['build','--dir',docs,'--out',out]);
  assert.equal(fs.existsSync(path.join(out,'active.html')),false,'unrelated active HTML must not export');
  live=spawn(binary,['serve','--dir',docs,'--addr','127.0.0.1:0','--no-update-check']);

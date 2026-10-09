@@ -29,8 +29,8 @@ Three built-in themes — one toolbar button cycles them:
 ## Features
 
 A single-page Markdown reader: Markdown renders in the browser and the whole
-front-end bundle is embedded, so it works **fully offline** — no CDN, no
-network.
+front-end bundle is embedded, so local-only documents work **offline** without
+a CDN. Remote document images and release checks can still use the network.
 
 - **Reads the current directory** — a bare `mdserve` serves the folder you're
   standing in (free-port fallback if `127.0.0.1:8080` is taken, race-free via
@@ -56,11 +56,12 @@ network.
   (time · status · method · duration · path).
 - **Static build** — `mdserve build` renders a self-contained, offline HTML
   tree (the vendor bundle is copied alongside).
-- Path-traversal-safe; serves only `.md` under the configured root.
+- Rooted file access with hidden-path, exclusion, symlink, Host and Origin checks.
+  Markdown and permitted local assets are served beneath the configured root.
 
 ## Rich content, rendered offline
 
-Docs render from the embedded vendor bundle — no CDN, no network, no build step:
+Docs render from the embedded vendor bundle — no CDN or build step:
 
 - **Syntax highlighting** — fenced code blocks via highlight.js, with a real
   dark theme in dark mode.
@@ -264,7 +265,8 @@ Markdown is rendered client-side by marked.js; the file tree (`/api/tree`), file
 contents (`/raw`), and change polling (`/api/poll`) are tiny JSON/text endpoints.
 The front-end vendor bundle — marked, DOMPurify, highlight.js, Mermaid, KaTeX (+ its fonts)
 — is embedded with `go:embed` and served from `/vendor/`, so both the live
-reader and the static build work with no network. Live-reload is an mtime poll,
+reader and the static build render local-only documents without network access.
+Live-reload is an mtime poll,
 so behavior is identical across OSes. The static build pre-renders Markdown with
 a small, self-contained renderer (a GFM subset) in `internal/markdown`.
 
@@ -280,12 +282,13 @@ A Makefile target that shells out to the installed binary:
 ```make
 doc:        ## Serve docs/ as HTML (free port, opens browser)
 	@mdserve serve --dir docs --default-doc README.md --open
-doc-build:  ## Render docs/ to docs/_site/
+doc-build:  ## Render docs/ to a fresh sibling docs-site/
 	@mdserve build --dir docs --out docs-site
 ```
 
-> **Local docs only.** mdserve has no auth and renders raw repo Markdown; it
-> binds for local browsing. Never run it as a public/deployed service.
+> **Local docs only.** mdserve has no authentication. Keep the default loopback
+> bind and choose a root containing only shareable documents and assets. Host and
+> Origin checks do not authorize users. Do not deploy the live server publicly.
 
 ## Development
 
@@ -293,9 +296,22 @@ doc-build:  ## Render docs/ to docs/_site/
 make build              # build ./bin/mdserve (version stamped from git)
 make install            # go install, version-stamped
 make run                # build + serve the current dir, open the browser
-make test               # run the suite
+make test               # run Go regressions, including dummy installer fixtures
+make vet                # run Go static analysis
 make                    # list all targets
 ```
+
+Go 1.26 or newer is required. For the development-only browser suite, follow
+[tests/browser/README.md](tests/browser/README.md). CI runs Go tests, race checks
+and vet on Linux/macOS/Windows, plus live/static Chromium security and feature
+checks on Linux. Installer tests use temporary HOME and install directories, not
+your real profile or installed binary. Browser dependencies are absent from the
+embedded application.
+
+See [internal/web/VENDOR.md](internal/web/VENDOR.md) for bundled-library versions,
+provenance and the dated advisory review. Sanitization and request checks do not
+provide resource limits for arbitrary large or expensive documents. Source
+validation does not prove that published binaries contain this source.
 
 ## License
 
