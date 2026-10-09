@@ -7,3 +7,6 @@
 # rendered static sites
 _site/
 *.md.html
+
+# development-only browser dependencies
+/tests/browser/node_modules/

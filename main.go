@@ -37,6 +37,7 @@ serve flags:
   --addr string         listen address; falls back to a free port if taken (default "127.0.0.1:8080")
   --default-doc string  doc opened first (default "README.md")
   --exclude glob        hide dirs/files matching a glob (repeatable, comma-separated)
+  --allow-host string   additional exact hostname/IP (repeatable, no port)
   --open                open the default browser at the served URL
   --no-reload           disable live-reload polling
   --no-update-check     don't check GitHub for a newer release on launch
@@ -164,8 +165,9 @@ func runServe(args []string) {
 	dir := fs.String("dir", defaultDir, "directory of .md files")
 	addr := fs.String("addr", defaultAddr, "listen address (free-port fallback if taken)")
 	defDoc := fs.String("default-doc", "README.md", "doc opened at /")
-	var exclude stringList
+	var exclude, allowedHosts stringList
 	fs.Var(&exclude, "exclude", "glob(s) to hide from serving (repeatable, comma-separated)")
+	fs.Var(&allowedHosts, "allow-host", "additional exact hostname/IP (repeatable, no port)")
 	open := fs.Bool("open", false, "open the browser")
 	noReload := fs.Bool("no-reload", false, "disable live-reload polling")
 	noUpdate := fs.Bool("no-update-check", false, "don't check GitHub for a newer release on launch")
@@ -180,6 +182,11 @@ func runServe(args []string) {
 	}
 	defer srv.Close()
 	ln, shown, err := listen(*addr)
+	if err != nil {
+		fatal(err)
+	}
+	defer ln.Close()
+	handler, err := server.GuardRequests(srv, ln.Addr(), allowedHosts)
 	if err != nil {
 		fatal(err)
 	}
@@ -199,7 +206,7 @@ func runServe(args []string) {
 	if *open {
 		openBrowser(url)
 	}
-	httpSrv := &http.Server{Handler: server.LogRequests(srv)} //nolint:gosec // local dev server
+	httpSrv := &http.Server{Handler: server.LogRequests(handler)} //nolint:gosec // local dev server
 	if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		fatal(err)
 	}

@@ -155,6 +155,7 @@ mdserve serve --exclude node_modules --exclude "*.private.md"  # hide paths
 | `--addr` | `127.0.0.1:8080` | loopback only; falls back to a free port if taken |
 | `--default-doc` | `README.md` | doc opened at `/` |
 | `--exclude` | — | glob(s) to hide dirs/files; repeatable & comma-separated |
+| `--allow-host` | — | additional exact hostname/IP for custom access; repeatable, no port |
 | `--open` | off | open the browser |
 | `--no-reload` | off | disable live-reload polling (serve) |
 | `--no-update-check` | off | skip the launch-time release check (serve) |
@@ -175,6 +176,16 @@ and segments ending in dots or spaces are rejected on every platform. Ordinary
 Markdown, images, and local assets remain supported. This policy does not isolate
 hard-linked files or mounted filesystems; choose a document root containing only
 files you intend to share.
+
+HTTP requests must use `localhost`, `127.0.0.1`, `::1`, the concrete bound IP,
+or an exact name configured with `--allow-host`, at the actual listening port
+(including free-port fallback). Wildcard listeners such as `--addr :9000` still
+require explicit hostnames/IPs for LAN access: for example, add
+`--allow-host 192.168.1.10 --allow-host docs.example`. No authentication is added.
+Browser Origin headers must match the request origin exactly; missing Origin
+headers are accepted for navigation and command-line clients. Cross-site and
+same-site Fetch Metadata requests are rejected. Only GET and HEAD are supported;
+no CORS access is granted. Reverse proxies must preserve these host/origin rules.
 
 ## Design
 
