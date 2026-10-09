@@ -29,7 +29,21 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fish zsh
       - name: Go regressions (includes installer fixtures on POSIX)
-        run: go test ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./... 2>&1 | tee "$RUNNER_TEMP/mdserve-go-test.log"
+      - name: Annotate Go regression failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/mdserve-go-test.log" ]; then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              printf '::error::%s\n' "$line"
+            done < "$RUNNER_TEMP/mdserve-go-test.log"
+          fi
       - name: Race checks
         run: go test -race ./...
       - name: Static analysis
