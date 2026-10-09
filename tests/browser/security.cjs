@@ -24,6 +24,7 @@ const {pathToFileURL}=require('node:url');
  fs.appendFileSync(path.join(docs,'README.md'),'\nاستانداردسازی زیرساخت‌های بین‌المللی — می‌شود <bdi dir="ltr">+98 21 9123 4567</bdi>\n');
  execFileSync('go',['build','-o',binary,'.'],{cwd:repo,env:{...process.env,GOCACHE:'/private/tmp/mdserve-go-cache'}});
  execFileSync(binary,['build','--dir',docs,'--out',out]);
+ assert.equal(fs.existsSync(path.join(out,'active.html')),false,'unrelated active HTML must not export');
  live=spawn(binary,['serve','--dir',docs,'--addr','127.0.0.1:0','--no-update-check']);
  const liveURL=await new Promise((resolve,reject)=>{let s='';const timer=setTimeout(()=>reject(Error('startup timeout')),10000);live.stdout.on('data',b=>{s+=b;const m=s.match(/http:\/\/[^\s]+\//);if(m){clearTimeout(timer);resolve(m[0]);}});live.on('exit',c=>reject(Error('startup exit '+c)));});
  const staticServer=http.createServer((req,res)=>{const p=path.join(out,decodeURIComponent(new URL(req.url,'http://local').pathname));try{const b=fs.readFileSync(p);res.setHeader('Content-Type',p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.svg')?'image/svg+xml':p.endsWith('.html')?'text/html':'application/octet-stream');res.end(b);}catch{res.writeHead(404);res.end();}});servers.push(staticServer);await new Promise(r=>staticServer.listen(0,'127.0.0.1',r));

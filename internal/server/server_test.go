@@ -233,6 +233,7 @@ func TestVendorAssetServed(t *testing.T) {
 func TestBuildStaticOffline(t *testing.T) {
 	srv, dir := newTestServer(t)
 	mustWrite(t, filepath.Join(dir, "img", "pic.png"), "\x89PNG\r\n\x1a\nfake")
+	mustWrite(t, filepath.Join(dir, "README.md"), "# Home\n![image](img/pic.png)\n")
 	out := t.TempDir()
 	if err := srv.BuildStatic(out); err != nil {
 		t.Fatalf("BuildStatic: %v", err)

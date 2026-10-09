@@ -73,8 +73,8 @@ Docs render from the embedded vendor bundle — no CDN, no network, no build ste
   one doc, and the file tree, outline, and breadcrumb follow suit. Arabic &
   Persian use the embedded **Vazirmatn** (serif) / **Noto Sans Arabic** (sans)
   faces; other RTL scripts use the system font. Fenced code stays left-to-right.
-- **Local images & assets** referenced by a doc are served too, and copied into
-  the static build.
+- **Local images & assets** referenced by a doc are served too. Static builds
+  copy permitted referenced images alongside the pages.
 
 ````markdown
 ```mermaid
@@ -198,8 +198,24 @@ displaying it; they work offline with the copied vendor bundle.
 The reader uses a hash-based script Content Security Policy without inline-script
 or eval permission; inline styles remain permitted for math and diagrams. Live
 raw/asset responses have a restrictive sandbox policy to prevent standalone
-HTML/SVG from becoming executable reader-origin pages. This does not sanitize
-every copied export asset; export selection and destination safety are separate.
+HTML/SVG from becoming executable reader-origin pages. Static export assets
+follow the image policy below.
+
+Static export copies only local images referenced by quoted `src`/`href` values
+in rendered documents: PNG, JPEG, GIF, WebP, AVIF, ICO, and restricted SVG.
+SVG must contain only basic drawing/text primitives and permitted attributes;
+scripts, styles, links, external resources, animation and foreign markup fail the
+build. Hidden, excluded and symlink inputs remain blocked. Unsupported or missing
+assets are skipped with diagnostics; Markdown links retain their generated targets.
+Unrelated files, HTML, scripts, stylesheets and arbitrary downloads are not copied.
+The `vendor/` namespace is reserved for the embedded bundle.
+
+The output must be absent or empty, outside the source tree, with an existing
+parent and no destination symlinks. A private sibling directory is populated
+through rooted writes and renamed into place after success. Existing exports must
+be removed or a new output directory selected before rebuilding. Failed builds
+leave source files and existing output contents intact. Exported documents may
+still reference remote images; inspect the intended documents before publishing.
 
 Embedded libraries and fonts need no network. Documents may still reference
 remote HTTP/HTTPS images and links; remote images remain allowed by design and
@@ -230,7 +246,7 @@ A Makefile target that shells out to the installed binary:
 doc:        ## Serve docs/ as HTML (free port, opens browser)
 	@mdserve serve --dir docs --default-doc README.md --open
 doc-build:  ## Render docs/ to docs/_site/
-	@mdserve build --dir docs --out docs/_site
+	@mdserve build --dir docs --out docs-site
 ```
 
 > **Local docs only.** mdserve has no auth and renders raw repo Markdown; it

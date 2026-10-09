@@ -2,7 +2,6 @@ package web
 
 import (
 	"embed"
-	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -60,6 +59,16 @@ func ServeVendor(w http.ResponseWriter, r *http.Request, name string) {
 // CopyVendor writes the embedded vendor tree under outDir/vendor (used by the
 // static build so the generated site is also fully offline).
 func CopyVendor(outDir string) error {
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return CopyVendorRoot(root)
+}
+
+// CopyVendorRoot writes through an already anchored, private export root.
+func CopyVendorRoot(root *os.Root) error {
 	return fs.WalkDir(vendorSub, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -67,21 +76,23 @@ func CopyVendor(outDir string) error {
 		if d.IsDir() {
 			return nil
 		}
-		dst := filepath.Join(outDir, "vendor", filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		dst := path.Join("vendor", p)
+		if err := root.MkdirAll(path.Dir(dst), 0755); err != nil {
 			return err
 		}
-		src, err := vendorSub.Open(p)
+		data, err := fs.ReadFile(vendorSub, p)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = src.Close() }()
-		f, err := os.Create(dst)
+		f, err := root.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = f.Close() }()
-		_, err = io.Copy(f, src)
-		return err
+		_, err = f.Write(data)
+		closeErr := f.Close()
+		if err != nil {
+			return err
+		}
+		return closeErr
 	})
 }

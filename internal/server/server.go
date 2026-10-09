@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/mostafa-re/mdserve/internal/ansi"
-	"github.com/mostafa-re/mdserve/internal/markdown"
 	"github.com/mostafa-re/mdserve/internal/web"
 )
 
@@ -295,80 +294,6 @@ func extractTitle(src []byte) string {
 func jsonString(value string) string {
 	b, _ := json.Marshal(value)
 	return string(b)
-}
-
-// BuildStatic renders each .md under docDir to a standalone HTML page under
-// outDir, and copies the embedded vendor bundle alongside, so the result is a
-// fully-offline static site. Used by `mdserve build`.
-func (s *Server) BuildStatic(outDir string) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
-	}
-	if err := web.CopyVendor(outDir); err != nil {
-		return err
-	}
-	if err := s.copyAssets(outDir); err != nil {
-		return err
-	}
-	entries := s.flattenMtimes()
-	rels := make([]string, 0, len(entries))
-	for rel := range entries {
-		rels = append(rels, rel)
-	}
-	sort.Strings(rels)
-	for _, rel := range rels {
-		raw, err := s.readPath(rel)
-		if err != nil {
-			return err
-		}
-		title := extractTitle(raw)
-		if title == "" {
-			title = path.Base(rel)
-		}
-		depth := strings.Count(rel, "/")
-		root := strings.Repeat("../", depth)
-		body := jsonString(string(markdown.Render(raw)))
-		shell := strings.NewReplacer("__ROOT__", root, "__TITLE__", html.EscapeString(title), "__BODY__", body).Replace(web.BuildShell)
-		shell = web.ProtectStatic(shell)
-		outPath := filepath.Join(outDir, filepath.FromSlash(rel)+".html")
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(outPath, []byte(shell), 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// copyAssets mirrors every non-Markdown file under docDir into outDir (same
-// relative paths), so images and other assets referenced by the docs resolve in
-// the static site. Hidden dirs and the build output (_site) are skipped.
-func (s *Server) copyAssets(outDir string) error {
-	return s.walkFiles(".", func(rel string, info os.FileInfo) error {
-		if strings.HasSuffix(strings.ToLower(rel), ".md") {
-			return nil
-		}
-		in, err := s.openPath(rel)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		dst := filepath.Join(outDir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-		out, err := os.Create(dst)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(out, in)
-		cerr := out.Close()
-		if err != nil {
-			return err
-		}
-		return cerr
-	})
 }
 
 // statusWriter records the response status code for request logging.
