@@ -87,16 +87,51 @@ Euler's identity, inline: $e^{i\pi} + 1 = 0$
 
 ## Install
 
-No toolchain needed — grab a prebuilt binary:
+No toolchain needed — download an installer at a pinned release tag, inspect it,
+then run it. Select the tag you intend to install from the
+[releases page](https://github.com/mostafa-re/mdserve/releases):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mostafa-re/mdserve/main/scripts/install.sh | sh
+release_tag=vX.Y.Z  # replace with a release containing the verified installer
+curl --proto '=https' --proto-redir '=https' -fsSL \
+  "https://raw.githubusercontent.com/mostafa-re/mdserve/$release_tag/scripts/install.sh" \
+  -o install-mdserve.sh
+less install-mdserve.sh
+MDSERVE_VERSION="$release_tag" sh install-mdserve.sh
 ```
 
-Detects your OS/arch and installs to `~/.local/bin`, and adds that dir to your
-`PATH` (in your shell rc) when it isn't already there — no root needed. Override
-the version or dir with `MDSERVE_VERSION` / `MDSERVE_BINDIR`; skip the PATH edit
-with `MDSERVE_NO_MODIFY_PATH`.
+Use a release containing the verified installer described here; older pinned
+scripts may lack these checks. Inspecting the script matters before running it.
+The installer detects macOS/Linux and amd64/arm64, verifies the matching per-asset
+`.sha256` record, and extracts only the expected regular `mdserve` entry. It stages
+the binary in the installation directory and renames it into place after success.
+No root is needed. `MDSERVE_BINDIR` selects an absolute install directory (no colon);
+`MDSERVE_NO_MODIFY_PATH=1` skips shell profile edits. Custom paths are quoted as
+shell data when writing configuration for sh/bash/zsh/fish.
+
+Both installer and updater fail closed on missing/malformed/mismatched checksums,
+unsafe entry paths, links and extra archive entries. The Go updater limits archives
+to 64 MiB, binaries to 128 MiB, and checksum records to 4 KiB. Unix replacement is
+atomic; Windows moves the old executable to a unique backup and restores it if
+replacement fails. If rollback also fails, the diagnostic identifies the retained
+backup. Checksums from the same GitHub release detect corruption; they do not
+independently authenticate a compromised release and are not signatures.
+
+For manual verification, download the chosen archive and its `.sha256` file from
+the same release. Inspect the checksum file: it must contain exactly one 64-digit
+SHA-256 digest and the exact archive filename. Before extracting, compare it with:
+
+```sh
+sha256sum mdserve_v0.7.0_darwin_arm64.tar.gz
+# macOS alternative:
+shasum -a 256 mdserve_v0.7.0_darwin_arm64.tar.gz
+```
+
+Stop on a mismatch. Inspect `tar -tzf ARCHIVE` and `tar -tvzf ARCHIVE`: the only entry
+must be the regular file `mdserve`. For a Windows ZIP, inspect the sole regular
+`mdserve.exe` entry and compare `(Get-FileHash ARCHIVE -Algorithm SHA256).Hash` in
+PowerShell with the downloaded digest. Keep the existing executable until all
+verification and extraction steps succeed.
 
 ### Releases
 

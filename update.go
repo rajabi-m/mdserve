@@ -6,12 +6,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -60,7 +63,15 @@ func httpGet(url string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", updateUA)
-	return (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	return (&http.Client{Timeout: 60 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("release redirect must use HTTPS")
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many release redirects")
+		}
+		return nil
+	}}).Do(req)
 }
 
 // latestTag returns the tag_name of the latest GitHub release (60s timeout).
@@ -90,11 +101,11 @@ func latestTagCtx(timeout time.Duration) (string, error) {
 	var r struct {
 		TagName string `json:"tag_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&r); err != nil {
 		return "", err
 	}
-	if r.TagName == "" {
-		return "", fmt.Errorf("no releases found")
+	if !validReleaseTag(r.TagName) {
+		return "", fmt.Errorf("invalid release tag")
 	}
 	return r.TagName, nil
 }
@@ -111,21 +122,73 @@ func assetFor(tag string) (asset, binName string) {
 	return fmt.Sprintf("mdserve_%s_%s_%s.%s", tag, runtime.GOOS, runtime.GOARCH, ext), binName
 }
 
-// downloadReleaseBinary fetches the release archive for this platform and returns
-// the extracted binary bytes.
-func downloadReleaseBinary(tag string) ([]byte, error) {
-	asset, binName := assetFor(tag)
-	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repoSlug, tag, asset)
+// Release payload limits cover downloads and decompression separately.
+const maxReleaseArchive = 64 << 20
+const maxReleaseBinary = 128 << 20
+
+var releaseTagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$`)
+
+func validReleaseTag(tag string) bool { return len(tag) <= 128 && releaseTagPattern.MatchString(tag) }
+
+func readBounded(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("release payload exceeds size limit")
+	}
+	return data, nil
+}
+
+func fetchReleaseAsset(url string, limit int64) ([]byte, error) {
 	resp, err := httpGet(url)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch %s: %s", asset, resp.Status)
+		return nil, fmt.Errorf("release download: HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
+	if resp.ContentLength > limit {
+		return nil, fmt.Errorf("release payload exceeds size limit")
+	}
+	return readBounded(resp.Body, limit)
+}
+
+// Per-asset checksum files use the exact sha256sum format from release.yml.
+func verifyReleaseChecksum(data, checksum []byte, asset string) error {
+	line := strings.TrimSuffix(string(checksum), "\n")
+	if len(line) != 66+len(asset) || (line[64:66] != "  " && line[64:66] != " *") || line[66:] != asset {
+		return fmt.Errorf("invalid release checksum record")
+	}
+	expected, err := hex.DecodeString(line[:64])
 	if err != nil {
+		return fmt.Errorf("invalid release checksum digest")
+	}
+	actual := sha256.Sum256(data)
+	if !bytes.Equal(actual[:], expected) {
+		return fmt.Errorf("release checksum mismatch")
+	}
+	return nil
+}
+
+// downloadReleaseBinary verifies the matching published checksum before extraction.
+func downloadReleaseBinary(tag string) ([]byte, error) {
+	if !validReleaseTag(tag) {
+		return nil, fmt.Errorf("invalid release tag")
+	}
+	asset, binName := assetFor(tag)
+	base := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repoSlug, tag, asset)
+	checksum, err := fetchReleaseAsset(base+".sha256", 4096)
+	if err != nil {
+		return nil, err
+	}
+	data, err := fetchReleaseAsset(base, maxReleaseArchive)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyReleaseChecksum(data, checksum, asset); err != nil {
 		return nil, err
 	}
 	if strings.HasSuffix(asset, ".zip") {
@@ -139,21 +202,40 @@ func extractFromTarGz(data []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = gz.Close() }()
-	tr := tar.NewReader(gz)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if filepath.Base(h.Name) == name {
-			return io.ReadAll(tr)
+	defer gz.Close()
+	// Include a small allowance for tar metadata and padding, but bound all
+	// decompression, including data after tar's end marker and concatenated gzip.
+	expanded, err := readBounded(gz, maxReleaseBinary+(1<<20))
+	if err != nil {
+		return nil, err
+	}
+	tr := tar.NewReader(bytes.NewReader(expanded))
+	h, err := tr.Next()
+	if err != nil {
+		return nil, err
+	}
+	if h.Name != name || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > maxReleaseBinary || h.Linkname != "" {
+		return nil, fmt.Errorf("unexpected release binary entry")
+	}
+	bin, err := readBounded(tr, maxReleaseBinary)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tr.Next(); err != io.EOF {
+		return nil, fmt.Errorf("release archive must contain only %s", name)
+	}
+	// The expected release archive has just the header, binary and zero padding.
+	// Reject hidden trailing nonzero records after the end marker.
+	offset := 512 + ((h.Size+511)/512)*512
+	if offset > int64(len(expanded)) {
+		return nil, fmt.Errorf("truncated release archive")
+	}
+	for _, b := range expanded[offset:] {
+		if b != 0 {
+			return nil, fmt.Errorf("unexpected trailing archive data")
 		}
 	}
-	return nil, fmt.Errorf("%s not found in archive", name)
+	return bin, nil
 }
 
 func extractFromZip(data []byte, name string) ([]byte, error) {
@@ -161,63 +243,93 @@ func extractFromZip(data []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, f := range zr.File {
-		if filepath.Base(f.Name) == name {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer func() { _ = rc.Close() }()
-			return io.ReadAll(rc)
-		}
+	if len(zr.File) != 1 {
+		return nil, fmt.Errorf("release archive must contain only %s", name)
 	}
-	return nil, fmt.Errorf("%s not found in archive", name)
+	f := zr.File[0]
+	if f.Name != name || !f.Mode().IsRegular() || f.UncompressedSize64 == 0 || f.UncompressedSize64 > maxReleaseBinary {
+		return nil, fmt.Errorf("unexpected release binary entry")
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return readBounded(rc, maxReleaseBinary)
 }
 
 // replaceExecutable swaps the running binary for newBin. It writes a temp file in
 // the same directory (so the rename is atomic on the same filesystem) and renames
 // it over the current executable. On Windows the running file can't be
-// overwritten, so it is moved aside to <exe>.old first.
+// overwritten, so it is moved to a unique backup first and restored on failure.
 func replaceExecutable(newBin []byte) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return err
+	}
+	return replaceExecutableAt(exe, newBin, runtime.GOOS == "windows", os.Rename)
+}
+
+// rename is injectable to exercise both Windows moves and rollback failures
+// without replacing the executable running the test suite.
+func replaceExecutableAt(exe string, newBin []byte, windows bool, rename func(string, string) error) error {
+	if len(newBin) == 0 || len(newBin) > maxReleaseBinary {
+		return fmt.Errorf("invalid update binary size")
 	}
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".mdserve-update-*")
 	if err != nil {
-		return fmt.Errorf("%w (need write access to %s — re-run with sudo or reinstall)", err, dir)
+		return fmt.Errorf("stage update (directory must be writable): %w", err)
 	}
 	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
+	defer os.Remove(tmpName)
 	if _, err := tmp.Write(newBin); err != nil {
-		_ = tmp.Close()
-		cleanup()
+		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o755); err != nil {
-		_ = tmp.Close()
-		cleanup()
+	if err := tmp.Chmod(0755); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		cleanup()
 		return err
 	}
-	if runtime.GOOS == "windows" {
-		old := exe + ".old"
-		_ = os.Remove(old)
-		if err := os.Rename(exe, old); err != nil {
-			cleanup()
+	backup := ""
+	if windows {
+		old, err := os.CreateTemp(dir, ".mdserve-old-*")
+		if err != nil {
+			return err
+		}
+		backup = old.Name()
+		if err := old.Close(); err != nil {
+			os.Remove(backup)
+			return err
+		}
+		if err := os.Remove(backup); err != nil {
+			return err
+		}
+		if err := rename(exe, backup); err != nil {
 			return err
 		}
 	}
-	if err := os.Rename(tmpName, exe); err != nil {
-		cleanup()
-		return fmt.Errorf("%w (need write access to %s)", err, dir)
+	if err := rename(tmpName, exe); err != nil {
+		if backup != "" {
+			if restoreErr := rename(backup, exe); restoreErr != nil {
+				return fmt.Errorf("update failed: %w; old executable retained at %s (rollback: %v)", err, backup, restoreErr)
+			}
+		}
+		return fmt.Errorf("replace executable: %w", err)
 	}
+	if backup != "" {
+		_ = os.Remove(backup)
+	} // a running Windows binary may remain locked
 	return nil
 }
